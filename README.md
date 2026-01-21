@@ -116,8 +116,19 @@ If you use the library with symmetry augmentation, please cite:
 }
 ```
 
-
-TODO 
-1.找到obs_batch 对应的真实速度slice
-2.验证估计速度的准确性——从embedding中提出速度。
-2.如何把网络估计的速度融入到policy_obs中
+# 旅程的开始 
+## 2026.1.20  
+### 完成第一版AME2MapEcoder，包含了：  
+1. propsEcoder（MLP）:输入：多帧policy obs / 单帧privilege obs；  输出: prop_embeded  作用：统一prop编码，使得actor与critic共用一套encoder  
+2. local feature extractor(CNN)：  
+3. Pos_embeded(MLP)  
+4. Global feature extractor(MLP):  
+5. Query fuser(MLP) : global feature + props_embed
+6. mha: K,V——local featrue; Q——fuser  
+### latent蒸馏：  
+在PPO中新增优化器：在AME2Encoder之后对critic与actor的latent进行蒸馏。但是还没有确定蒸馏的方式——  
+1. 当前：调用AME2Encoder在ppo计算时计算latent，且actor与critic共用一个encoder（不妥）  
+2. 想要的改进：分为两阶段训练——teacher使用多特权，student如当下结构，当teacher收敛之后再对student的latent进行distillation  
+Enc2ActorCritic 现在有两个独立的 AME2Encoder：actor_AME2Encoder 和 critic_AME2Encoder。  
+Actor/critic 编码流程分别使用各自的 encoder。   
+PPO 蒸馏使用 critic encoder 的 embedding 作为 teacher，actor encoder 的 embedding 作为 student，并且只更新 actor encoder + actor props encoder。  
