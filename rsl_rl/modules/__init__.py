@@ -13,12 +13,14 @@ from .student_teacher_recurrent import StudentTeacherRecurrent
 from .symmetry import *
 from .enc_actor_critic import EncActorCritic
 from .enc2_actor_critic import Enc2ActorCritic
+from .discriminator import Discriminator
 
 __all__ = [
     "ActorCritic",
     "ActorCriticRecurrent",
     "StudentTeacher",
     "StudentTeacherRecurrent",
-    "EncActorCritic"
+    "EncActorCritic",
     "Enc2ActorCritic",
+    "Discriminator",
 ]

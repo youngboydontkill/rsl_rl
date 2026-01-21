@@ -100,14 +100,16 @@ class OnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for _ in range(self.num_steps_per_env):
+                    amp_obs = self._get_amp_obs(obs)
                     # Sample actions
-                    actions = self.alg.act(obs)
+                    actions = self.alg.act(obs, amp_obs=amp_obs)
                     # Step the environment
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
                     # Move to device
                     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     # process the step
-                    self.alg.process_env_step(obs, rewards, dones, extras)
+                    next_amp_obs = self._get_amp_obs(obs, extras)
+                    self.alg.process_env_step(obs, rewards, dones, extras, amp_obs=next_amp_obs)
                     # Extract intrinsic rewards (only for logging)
                     intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
                     # book keeping
@@ -237,6 +239,17 @@ class OnPolicyRunner:
                 self.writer.add_scalar(
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
+
+    def _get_amp_obs(self, obs, extras=None):
+        """Extract AMP policy observations if present."""
+        amp_obs = None
+        if obs is not None and hasattr(obs, "get"):
+            amp_obs = obs.get("amp_policy", None)
+        if amp_obs is None and extras is not None:
+            obs_extras = extras.get("observations", None) if hasattr(extras, "get") else None
+            if obs_extras is not None and hasattr(obs_extras, "get"):
+                amp_obs = obs_extras.get("amp_policy", None)
+        return amp_obs
 
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 

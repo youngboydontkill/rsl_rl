@@ -12,7 +12,7 @@ from itertools import chain
 
 from rsl_rl.modules import ActorCritic,Enc2ActorCritic
 from rsl_rl.modules.rnd import RandomNetworkDistillation
-from rsl_rl.storage import RolloutStorage
+from rsl_rl.storage import ReplayBuffer, RolloutStorage
 from rsl_rl.utils import string_to_callable
 
 
@@ -50,6 +50,15 @@ class PPO:
         symmetry_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
+        # AMP parameters
+        discriminator=None,
+        amp_data=None,
+        amp_normalizer=None,
+        amp_replay_buffer_size=100000,
+        amp_loss_coef: float = 1.0,
+        amp_grad_pen_coef: float = 1.0,
+        amp_grad_pen_lambda: float = 10.0,
+        min_std=None,
         # Distillation parameters (Enc2ActorCritic only)
         distill_loss_coef: float = 0.0,
         distill_lr: float = 1e-4,
@@ -99,11 +108,39 @@ class PPO:
         else:
             self.symmetry = None
 
+        # AMP components
+        self.amp_enabled = discriminator is not None and amp_data is not None
+        self.amp_loss_coef = amp_loss_coef
+        self.amp_grad_pen_coef = amp_grad_pen_coef
+        self.amp_grad_pen_lambda = amp_grad_pen_lambda
+        self.min_std = min_std
+        if self.amp_enabled:
+            self.discriminator = discriminator
+            self.discriminator.to(self.device)
+            self.amp_transition = RolloutStorage.Transition()
+            self.amp_storage = ReplayBuffer(discriminator.input_dim // 2, amp_replay_buffer_size, device)
+            self.amp_data = amp_data
+            self.amp_normalizer = amp_normalizer
+        else:
+            self.discriminator = None
+            self.amp_transition = None
+            self.amp_storage = None
+            self.amp_data = None
+            self.amp_normalizer = None
+
         # PPO components
         self.policy = policy
         self.policy.to(self.device)
         # Create optimizer
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+        if self.amp_enabled:
+            params = [
+                {"params": self.policy.parameters(), "name": "policy"},
+                {"params": self.discriminator.trunk.parameters(), "weight_decay": 10e-4, "name": "amp_trunk"},
+                {"params": self.discriminator.amp_linear.parameters(), "weight_decay": 10e-2, "name": "amp_head"},
+            ]
+            self.optimizer = optim.Adam(params, lr=learning_rate)
+        else:
+            self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
         # Distillation optimizer (actor embedding -> critic embedding)
         self.distill_loss_coef = distill_loss_coef
         if isinstance(self.policy, Enc2ActorCritic) and self.distill_loss_coef > 0.0:
@@ -146,7 +183,7 @@ class PPO:
             self.device,
         )
 
-    def act(self, obs):
+    def act(self, obs, amp_obs=None):
         if self.policy.is_recurrent:
             self.transition.hidden_states = self.policy.get_hidden_states()
         # compute the actions and values
@@ -157,9 +194,11 @@ class PPO:
         self.transition.action_sigma = self.policy.action_std.detach()
         # need to record obs before env.step()
         self.transition.observations = obs
+        if self.amp_enabled and amp_obs is not None:
+            self.amp_transition.observations = amp_obs
         return self.transition.actions
 
-    def process_env_step(self, obs, rewards, dones, extras):
+    def process_env_step(self, obs, rewards, dones, extras, amp_obs=None):
         # update the normalizers
         self.policy.update_normalization(obs)
         if self.rnd:
@@ -184,6 +223,9 @@ class PPO:
             )
 
         # record the transition
+        if self.amp_enabled and amp_obs is not None:
+            self.amp_storage.insert(self.amp_transition.observations, amp_obs)
+            self.amp_transition.clear()
         self.storage.add_transitions(self.transition)
         self.transition.clear()
         self.policy.reset(dones)
@@ -210,6 +252,18 @@ class PPO:
         else:
             mean_symmetry_loss = None
 
+        # -- AMP loss
+        if self.amp_enabled:
+            mean_amp_loss = 0
+            mean_grad_pen_loss = 0
+            mean_policy_pred = 0
+            mean_expert_pred = 0
+        else:
+            mean_amp_loss = None
+            mean_grad_pen_loss = None
+            mean_policy_pred = None
+            mean_expert_pred = None
+
         # -- Distillation loss
         if self.distill_optimizer:
             mean_distill_loss = 0
@@ -227,19 +281,37 @@ class PPO:
         else:
             generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
 
+        if self.amp_enabled:
+            amp_policy_generator = self.amp_storage.feed_forward_generator(
+                self.num_learning_epochs * self.num_mini_batches,
+                self.storage.num_envs * self.storage.num_transitions_per_env // self.num_mini_batches,
+            )
+            amp_expert_generator = self.amp_data.feed_forward_generator(
+                self.num_learning_epochs * self.num_mini_batches,
+                self.storage.num_envs * self.storage.num_transitions_per_env // self.num_mini_batches,
+            )
+            batch_iter = zip(generator, amp_policy_generator, amp_expert_generator)
+        else:
+            batch_iter = generator
+
         # iterate over batches
-        for (
-            obs_batch,
-            actions_batch,
-            target_values_batch,
-            advantages_batch,
-            returns_batch,
-            old_actions_log_prob_batch,
-            old_mu_batch,
-            old_sigma_batch,
-            hid_states_batch,
-            masks_batch,
-        ) in generator:
+        for batch in batch_iter:
+            if self.amp_enabled:
+                sample, sample_amp_policy, sample_amp_expert = batch
+            else:
+                sample = batch
+            (
+                obs_batch,
+                actions_batch,
+                target_values_batch,
+                advantages_batch,
+                returns_batch,
+                old_actions_log_prob_batch,
+                old_mu_batch,
+                old_sigma_batch,
+                hid_states_batch,
+                masks_batch,
+            ) = sample
 
             # number of augmentations per sample
             # we start with 1 and increase it if we use symmetry augmentation
@@ -405,6 +477,26 @@ class PPO:
                 mseloss = torch.nn.MSELoss()
                 rnd_loss = mseloss(predicted_embedding, target_embedding)
 
+            # AMP loss
+            if self.amp_enabled:
+                policy_state, policy_next_state = sample_amp_policy
+                expert_state, expert_next_state = sample_amp_expert
+                if self.amp_normalizer is not None:
+                    with torch.no_grad():
+                        policy_state = self.amp_normalizer.normalize_torch(policy_state, self.device)
+                        policy_next_state = self.amp_normalizer.normalize_torch(policy_next_state, self.device)
+                        expert_state = self.amp_normalizer.normalize_torch(expert_state, self.device)
+                        expert_next_state = self.amp_normalizer.normalize_torch(expert_next_state, self.device)
+                policy_d = self.discriminator(torch.cat([policy_state, policy_next_state], dim=-1))
+                expert_d = self.discriminator(torch.cat([expert_state, expert_next_state], dim=-1))
+                expert_loss = torch.nn.MSELoss()(expert_d, torch.ones(expert_d.size(), device=self.device))
+                policy_loss = torch.nn.MSELoss()(policy_d, -1 * torch.ones(policy_d.size(), device=self.device))
+                amp_loss = 0.5 * (expert_loss + policy_loss)
+                grad_pen_loss = self.discriminator.compute_grad_pen(
+                    expert_state, expert_next_state, lambda_=self.amp_grad_pen_lambda
+                )
+                loss += self.amp_loss_coef * amp_loss + self.amp_grad_pen_coef * grad_pen_loss
+
             # Compute the gradients
             # -- For PPO
             self.optimizer.zero_grad()
@@ -442,10 +534,19 @@ class PPO:
                 distill_loss.backward()
                 self.distill_optimizer.step()
 
+            if self.amp_enabled and self.amp_normalizer is not None:
+                self.amp_normalizer.update(policy_state.cpu().numpy())
+                self.amp_normalizer.update(expert_state.cpu().numpy())
+
             # Store the losses
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
+            if mean_amp_loss is not None:
+                mean_amp_loss += amp_loss.item()
+                mean_grad_pen_loss += grad_pen_loss.item()
+                mean_policy_pred += policy_d.mean().item()
+                mean_expert_pred += expert_d.mean().item()
             # -- RND loss
             if mean_rnd_loss is not None:
                 mean_rnd_loss += rnd_loss.item()
@@ -468,6 +569,12 @@ class PPO:
             mean_symmetry_loss /= num_updates
         if mean_distill_loss is not None:
             mean_distill_loss /= num_updates
+        # -- AMP
+        if mean_amp_loss is not None:
+            mean_amp_loss /= num_updates
+            mean_grad_pen_loss /= num_updates
+            mean_policy_pred /= num_updates
+            mean_expert_pred /= num_updates
         # -- Clear the storage
         self.storage.clear()
 
@@ -477,6 +584,11 @@ class PPO:
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
         }
+        if mean_amp_loss is not None:
+            loss_dict["amp"] = mean_amp_loss
+            loss_dict["amp_grad_pen"] = mean_grad_pen_loss
+            loss_dict["amp_policy_pred"] = mean_policy_pred
+            loss_dict["amp_expert_pred"] = mean_expert_pred
         if self.rnd:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
@@ -506,12 +618,16 @@ class PPO:
         model_params = [self.policy.state_dict()]
         if self.rnd:
             model_params.append(self.rnd.predictor.state_dict())
+        if self.amp_enabled:
+            model_params.append(self.discriminator.state_dict())
         # broadcast the model parameters
         torch.distributed.broadcast_object_list(model_params, src=0)
         # load the model parameters on all GPUs from source GPU
         self.policy.load_state_dict(model_params[0])
         if self.rnd:
             self.rnd.predictor.load_state_dict(model_params[1])
+        if self.amp_enabled:
+            self.discriminator.load_state_dict(model_params[-1])
 
     def reduce_parameters(self):
         """Collect gradients from all GPUs and average them.
@@ -520,6 +636,8 @@ class PPO:
         """
         # Create a tensor to store the gradients
         grads = [param.grad.view(-1) for param in self.policy.parameters() if param.grad is not None]
+        if self.amp_enabled:
+            grads += [param.grad.view(-1) for param in self.discriminator.parameters() if param.grad is not None]
         if self.rnd:
             grads += [param.grad.view(-1) for param in self.rnd.parameters() if param.grad is not None]
         all_grads = torch.cat(grads)
@@ -530,6 +648,8 @@ class PPO:
 
         # Get all parameters
         all_params = self.policy.parameters()
+        if self.amp_enabled:
+            all_params = chain(all_params, self.discriminator.parameters())
         if self.rnd:
             all_params = chain(all_params, self.rnd.parameters())
 
