@@ -42,8 +42,6 @@ class PPO:
         # TODO velocity estimation
         velocity_estimation_enabled: bool = False,
         velocity_loss_coef=0.0,
-        use_estimated_vel:bool = False,
-        cnt = 0,
         # RND parameters
         rnd_cfg: dict | None = None,
         # Symmetry parameters

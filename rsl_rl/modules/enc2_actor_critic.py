@@ -30,6 +30,7 @@ class Enc2ActorCritic(nn.Module):
         attn_embedding_dim=64,
         props_embed_dim: int = 64,
         actor_porops_encoder_hidden:list[int]=[256,128],
+        use2Encoder:bool=False,
         load_mask:int=LOAD_POLICY_WEIGHTS|LOAD_CRITIC_WEIGHTS|LOAD_ENCODER_WEIGHTS|LOAD_NORMALIZER_WEIGHTS|LOAD_CRITIC_ESTIMATOR_WEIGHTS,
         output_attention:bool=False,
         **kwargs,
@@ -54,7 +55,8 @@ class Enc2ActorCritic(nn.Module):
             "for IsaacLab, you need to make sure that flatten_history_dim is False."
             num_critic_obs += obs[obs_group].shape[-1]
         self.num_actor_obs = num_actor_obs
-        self.num_critic_obs = num_critic_obs
+        self.num_critic_obs = num_critic_obs\
+        self.use2Encoder = use2Encoder
 
         # Encoder :
         # num_perception_obs = 0
@@ -70,19 +72,27 @@ class Enc2ActorCritic(nn.Module):
         self.props_embed_dim = props_embed_dim
         self.actor_props_encoder = PropsEncoder(d_proprio=num_actor_obs,prop_history=5,proprio_hiddens=self.actor_props_encoder_hidden,proprio_embed_dim=self.props_embed_dim)
         self.critic_props_encoder = PropsEncoder(d_proprio=num_critic_obs,prop_history=1,proprio_embed_dim=self.props_embed_dim)
-        self.actor_AME2Encoder = AME2MapEncoder(attn_dim=self.attn_embedding_dim)
-        self.critic_AME2Encoder = AME2MapEncoder(attn_dim=self.attn_embedding_dim)
-
+        # TODO 共用一个 or 分离？先用一个试试
+        if use2Encoder:
+            self.actor_AME2Encoder = AME2MapEncoder(attn_dim=self.attn_embedding_dim)
+            self.critic_AME2Encoder = AME2MapEncoder(attn_dim=self.attn_embedding_dim)
+            print(f"Actor AME2 Encoder : {self.actor_AME2Encoder}")
+            print(f"Critic AME2 Encoder : {self.critic_AME2Encoder}")
+        else:
+            self.AME2Encoder = AME2MapEncoder(attn_dim=self.attn_embedding_dim)
+            print(f"AME2 Encoder : {self.AME2Encoder}")
         print(f"Actor Props Encoder : {self.actor_props_encoder}")
         print(f"Critic Props Encoder : {self.critic_props_encoder}")
-        print(f"Actor AME2 Encoder : {self.actor_AME2Encoder}")
-        print(f"Critic AME2 Encoder : {self.critic_AME2Encoder}")
+        
         self.horizon = scan_height_shape[1] 
         self.high_dim_obs_shape = scan_height_shape # [B,H,L,W,C]
         self.load_mask = load_mask  # 加载参数的mask
         self.output_attention = output_attention  # 是否输出attention 
         # 使用prop encoder之后，嵌入维度固定
-        map_embed_dim = self.actor_AME2Encoder.encoder.global_dim + self.actor_AME2Encoder.encoder.attn_dim
+        if use2Encoder:
+            map_embed_dim = self.actor_AME2Encoder.encoder.global_dim + self.actor_AME2Encoder.encoder.attn_dim
+        else:
+            map_embed_dim = self.AME2Encoder.encoder.global_dim + self.AME2Encoder.encoder.attn_dim
         embedding_actor_dim = self.props_embed_dim + map_embed_dim  # [B, map_embed + prop_embed]
         embedding_critic_dim = self.props_embed_dim + map_embed_dim  # [B, map_embed + prop_embed]
         self.embedding_actor_dim = embedding_actor_dim
@@ -160,8 +170,10 @@ class Enc2ActorCritic(nn.Module):
         :param perception_obs: [B, H, d_obs]
         """
         # compute embedding 
-
-        embedding,_ = self.actor_AME2Encoder(perception_obs,props_embed,embedding_only=False)
+        if self.use2Encoder:
+            embedding,_ = self.actor_AME2Encoder(perception_obs,props_embed,embedding_only=False)
+        else:
+            embedding,_ = self.AME2Encoder(perception_obs,props_embed,embedding_only=False)
         if self.verify:
             print(f"embedding shape: {embedding.shape}")
             self.verify = False
@@ -190,7 +202,10 @@ class Enc2ActorCritic(nn.Module):
         low_dim_obs = self.actor_obs_normalizer(low_dim_obs) # [B,H,d]
         props_embed = self.actor_props_encoder(low_dim_obs)  # [B,H,props_embed_dim]
         # compute embedding 
-        embedding,attention = self.actor_AME2Encoder(high_dim_obs,props_embed,embedding_only=False)
+        if self.use2Encoder:
+            embedding,attention = self.actor_AME2Encoder(high_dim_obs,props_embed,embedding_only=False)
+        else:
+            embedding,attention = self.AME2Encoder(high_dim_obs,props_embed,embedding_only=False)
         # compute mean
         action = self.actor(embedding)
         if (self.output_attention):
@@ -202,7 +217,10 @@ class Enc2ActorCritic(nn.Module):
         low_dim_obs,high_dim_obs = self.get_critic_obs(obs)  # [B,H,d]
         low_dim_obs = self.critic_obs_normalizer(low_dim_obs)
         critic_porp_embed = self.critic_props_encoder(low_dim_obs)  # [B,props_embed_dim]
-        embedding,_ = self.critic_AME2Encoder(high_dim_obs,critic_porp_embed,embedding_only=True)
+        if self.use2Encoder:
+            embedding,_ = self.critic_AME2Encoder(high_dim_obs,critic_porp_embed,embedding_only=True)
+        else:
+            embedding,_ = self.AME2Encoder(high_dim_obs,critic_porp_embed,embedding_only=True)
         values = self.critic(embedding)
         return values
     
@@ -343,11 +361,14 @@ class Enc2ActorCritic(nn.Module):
             critic_state_dict = {k.replace('critic.', '',1): v for k, v in state_dict.items() if k.startswith('critic.')}
             self.critic.load_state_dict(critic_state_dict, strict=strict)
             print("=== EncActorCritic : Load Critic Weights ===")
-        if self.load_mask & self.LOAD_ENCODER_WEIGHTS:
+        if self.load_mask & self.LOAD_ENCODER_WEIGHTS & self.use2Encoder:
             enc_state_dict = {k.replace('encoder.', '',1): v for k, v in state_dict.items() if k.startswith('encoder.')}
             self.actor_AME2Encoder.load_state_dict(enc_state_dict, strict=strict)
             self.critic_AME2Encoder.load_state_dict(enc_state_dict, strict=strict)
             print("=== EncActorCritic : Load Encoder Weights (Actor/Critic) ===")
+        if self.load_mask & self.LOAD_ENCODER_WEIGHTS & (not self.use2Encoder):
+            enc_state_dict = {k.replace('encoder.', '',1): v for k, v in state_dict.items() if k.startswith('encoder.')}
+            self.encoder.load_state_dict(enc_state_dict, strict=strict)
         # 这里还需要load normalization的参数
         if (self.load_mask & self.LOAD_NORMALIZER_WEIGHTS):
             # if (self.actor_obs_normalization) and ('actor_obs_normalizer' in state_dict):
