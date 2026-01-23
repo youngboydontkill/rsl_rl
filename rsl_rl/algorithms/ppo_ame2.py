@@ -16,7 +16,7 @@ from rsl_rl.storage import ReplayBuffer, RolloutStorage
 from rsl_rl.utils import string_to_callable
 
 
-class PPO:
+class PPO_AME2:
     """Proximal Policy Optimization algorithm (https://arxiv.org/abs/1707.06347)."""
 
     policy: ActorCritic|Enc2ActorCritic
@@ -347,8 +347,6 @@ class PPO:
             # Recompute actions log prob and entropy for current batch of transitions
             # Note: we need to do this because we updated the policy with the new parameters
             # -- actor
-            if self.use_estimated_vel:
-                obs_batch["policy.base_lin_vel"] = self.policy.get_velocity_estimation()
             self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
             actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
             # -- critic
@@ -593,17 +591,6 @@ class PPO:
             loss_dict["symmetry"] = mean_symmetry_loss
         if mean_distill_loss is not None:
             loss_dict["distill"] = mean_distill_loss
-        if self.velocity_estimation_enabled:
-            mean_velocity_loss /= num_updates
-            # TODO 判断何时使用估计速度作为观测速度
-            if mean_velocity_loss < 0.5 :
-                self.cnt += 1
-                if self.cnt > 10:
-                    print(f"Velocity constraint satisfied: {self.policy.get_velocity_estimation()}")
-                    self.use_estimated_vel = True
-            else:
-                self.cnt = 0
-            loss_dict["velocity_loss"] = mean_velocity_loss
         return loss_dict
 
     """

@@ -14,6 +14,7 @@ class Enc2ActorCritic(nn.Module):
     LOAD_ENCODER_WEIGHTS = 4 
     LOAD_NORMALIZER_WEIGHTS = 8
     LOAD_CRITIC_ESTIMATOR_WEIGHTS = 16
+    LOAD_PROPS_ENCODER_WEIGHTS = 32
 
     def __init__(
         self,
@@ -28,8 +29,22 @@ class Enc2ActorCritic(nn.Module):
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
         attn_embedding_dim=64,
+        attn_dim: int | None = None,
+        embedding_dim: int | None = None,
+        map_channels: int | None = None,
+        num_heads: int = 8,
+        local_cnn_channels: tuple[int, ...] = (16, 48),
+        pos_embed_dim: int = 16,
+        local_mlp_hidden: tuple[int, ...] = (96,),
+        global_mlp_hidden: tuple[int, ...] = (64,),
+        global_dim: int = 64,
+        query_mlp_hidden: tuple[int, ...] = (96,),
+        use_batch_norm: bool = True,
+        pos_from_map: bool = True,
+        remove_xy_channels: bool = True,
         props_embed_dim: int = 64,
-        actor_porops_encoder_hidden:list[int]=[256,128],
+        actor_props_encoder_hidden:list[int]=[256,128],
+        critic_props_encoder_hidden:list[int] | None = None,
         use2Encoder:bool=False,
         load_mask:int=LOAD_POLICY_WEIGHTS|LOAD_CRITIC_WEIGHTS|LOAD_ENCODER_WEIGHTS|LOAD_NORMALIZER_WEIGHTS|LOAD_CRITIC_ESTIMATOR_WEIGHTS,
         output_attention:bool=False,
@@ -55,8 +70,24 @@ class Enc2ActorCritic(nn.Module):
             "for IsaacLab, you need to make sure that flatten_history_dim is False."
             num_critic_obs += obs[obs_group].shape[-1]
         self.num_actor_obs = num_actor_obs
-        self.num_critic_obs = num_critic_obs\
+        self.num_critic_obs = num_critic_obs
         self.use2Encoder = use2Encoder
+
+        actor_horizon_candidates = []
+        for obs_group in obs_groups["policy"]:
+            if len(obs[obs_group].shape) > 2:
+                actor_horizon_candidates.append(obs[obs_group].shape[1])
+        self.actor_horizon = max(actor_horizon_candidates) if actor_horizon_candidates else 1
+
+        critic_horizon_candidates = []
+        for obs_group in obs_groups["critic"]:
+            if len(obs[obs_group].shape) > 2:
+                critic_horizon_candidates.append(obs[obs_group].shape[1])
+        self.critic_single_frame = any(h == 1 for h in critic_horizon_candidates)
+        if self.critic_single_frame:
+            self.critic_horizon = 1
+        else:
+            self.critic_horizon = max(critic_horizon_candidates) if critic_horizon_candidates else 1
 
         # Encoder :
         # num_perception_obs = 0
@@ -66,25 +97,58 @@ class Enc2ActorCritic(nn.Module):
             # num_perception_obs += obs[obs_group].shape[-1]
             if (obs_group == "perception"):
                 scan_height_shape = obs[obs_group].shape # 
-        self.attn_embedding_dim = attn_embedding_dim
+        if embedding_dim is not None:
+            attn_dim = embedding_dim
+        if attn_dim is None:
+            attn_dim = attn_embedding_dim
+        self.attn_embedding_dim = attn_dim
 
-        self.actor_props_encoder_hidden = actor_porops_encoder_hidden
+        self.actor_props_encoder_hidden = actor_props_encoder_hidden
         self.props_embed_dim = props_embed_dim
-        self.actor_props_encoder = PropsEncoder(d_proprio=num_actor_obs,prop_history=5,proprio_hiddens=self.actor_props_encoder_hidden,proprio_embed_dim=self.props_embed_dim)
-        self.critic_props_encoder = PropsEncoder(d_proprio=num_critic_obs,prop_history=1,proprio_embed_dim=self.props_embed_dim)
+        self.actor_props_encoder = PropsEncoder(
+            d_proprio=num_actor_obs,
+            prop_history=5,
+            proprio_hiddens=self.actor_props_encoder_hidden,
+            proprio_embed_dim=self.props_embed_dim,
+        )
+        self.critic_props_encoder = PropsEncoder(
+            d_proprio=num_critic_obs,
+            prop_history=1,
+            proprio_hiddens=critic_props_encoder_hidden,
+            proprio_embed_dim=self.props_embed_dim,
+        )
+        if map_channels is None:
+            map_channels = scan_height_shape[-1]
+
+        encoder_cfg = dict(
+            map_channels=map_channels,
+            proprio_embed_dim=self.props_embed_dim,
+            attn_dim=self.attn_embedding_dim,
+            num_heads=num_heads,
+            local_cnn_channels=local_cnn_channels,
+            pos_embed_dim=pos_embed_dim,
+            local_mlp_hidden=local_mlp_hidden,
+            global_mlp_hidden=global_mlp_hidden,
+            global_dim=global_dim,
+            query_mlp_hidden=query_mlp_hidden,
+            use_batch_norm=use_batch_norm,
+            pos_from_map=pos_from_map,
+            remove_xy_channels=remove_xy_channels,
+        )
+
         # TODO 共用一个 or 分离？先用一个试试
         if use2Encoder:
-            self.actor_AME2Encoder = AME2MapEncoder(attn_dim=self.attn_embedding_dim)
-            self.critic_AME2Encoder = AME2MapEncoder(attn_dim=self.attn_embedding_dim)
+            self.actor_AME2Encoder = AME2MapEncoder(**encoder_cfg)
+            self.critic_AME2Encoder = AME2MapEncoder(**encoder_cfg)
             print(f"Actor AME2 Encoder : {self.actor_AME2Encoder}")
             print(f"Critic AME2 Encoder : {self.critic_AME2Encoder}")
         else:
-            self.AME2Encoder = AME2MapEncoder(attn_dim=self.attn_embedding_dim)
+            self.AME2Encoder = AME2MapEncoder(**encoder_cfg)
             print(f"AME2 Encoder : {self.AME2Encoder}")
         print(f"Actor Props Encoder : {self.actor_props_encoder}")
         print(f"Critic Props Encoder : {self.critic_props_encoder}")
-        
-        self.horizon = scan_height_shape[1] 
+
+        self.horizon = self.actor_horizon
         self.high_dim_obs_shape = scan_height_shape # [B,H,L,W,C]
         self.load_mask = load_mask  # 加载参数的mask
         self.output_attention = output_attention  # 是否输出attention 
@@ -117,7 +181,7 @@ class Enc2ActorCritic(nn.Module):
         # actor observation normalization
         self.actor_obs_normalization = actor_obs_normalization
         if actor_obs_normalization:
-            self.actor_obs_normalizer = EmpiricalNormalization((self.horizon,num_actor_obs))  # 这里是支持输入[B,H,d]的(self.horizon,num_actor_obs)
+            self.actor_obs_normalizer = EmpiricalNormalization((self.actor_horizon,num_actor_obs))  # 这里是支持输入[B,H,d]的(self.actor_horizon,num_actor_obs)
         else:
             self.actor_obs_normalizer = torch.nn.Identity()
         print(f"Actor MLP: {self.actor}")
@@ -127,7 +191,7 @@ class Enc2ActorCritic(nn.Module):
         # critic observation normalization
         self.critic_obs_normalization = critic_obs_normalization
         if critic_obs_normalization:
-            self.critic_obs_normalizer = EmpiricalNormalization((self.horizon,num_critic_obs))  # 是不是(self.horizon,num_critic_obs)会更好?
+            self.critic_obs_normalizer = EmpiricalNormalization((self.critic_horizon,num_critic_obs))  # 是不是(self.critic_horizon,num_critic_obs)会更好?
         else:
             self.critic_obs_normalizer = torch.nn.Identity()
         print(f"Critic MLP: {self.critic}")
@@ -218,9 +282,9 @@ class Enc2ActorCritic(nn.Module):
         low_dim_obs = self.critic_obs_normalizer(low_dim_obs)
         critic_porp_embed = self.critic_props_encoder(low_dim_obs)  # [B,props_embed_dim]
         if self.use2Encoder:
-            embedding,_ = self.critic_AME2Encoder(high_dim_obs,critic_porp_embed,embedding_only=True)
+            embedding,_ = self.critic_AME2Encoder(high_dim_obs,critic_porp_embed,embedding_only=False)
         else:
-            embedding,_ = self.AME2Encoder(high_dim_obs,critic_porp_embed,embedding_only=True)
+            embedding,_ = self.AME2Encoder(high_dim_obs,critic_porp_embed,embedding_only=False)
         values = self.critic(embedding)
         return values
     
@@ -306,7 +370,10 @@ class Enc2ActorCritic(nn.Module):
             # else:
             #     B = obs[obs_group].shape[0]
             #     obs_list.append(obs[obs_group].reshape(B,self.horizon,-1))  # [B,H,d_i]
-            obs_list.append(obs[obs_group]) # [B,H,d_i]
+            obs_tensor = obs[obs_group]
+            if obs_tensor.dim() > 2 and self.critic_single_frame:
+                obs_tensor = obs_tensor[:, -1:, ...]
+            obs_list.append(obs_tensor) # [B,H,d_i]
         low_dim_obs = torch.cat(obs_list, dim=-1)  # [B,H,d]
         high_dim_obs_list = []
         for obs_group in self.obs_groups["perception"]:
@@ -368,7 +435,15 @@ class Enc2ActorCritic(nn.Module):
             print("=== EncActorCritic : Load Encoder Weights (Actor/Critic) ===")
         if self.load_mask & self.LOAD_ENCODER_WEIGHTS & (not self.use2Encoder):
             enc_state_dict = {k.replace('encoder.', '',1): v for k, v in state_dict.items() if k.startswith('encoder.')}
-            self.encoder.load_state_dict(enc_state_dict, strict=strict)
+            self.AME2Encoder.load_state_dict(enc_state_dict, strict=strict)
+            print("=== EncActorCritic : Load Encoder Weights (Shared) ===")
+        if self.load_mask & self.LOAD_PROPS_ENCODER_WEIGHTS:
+            actor_props_enc_state_dict = {k.replace('actor_props_encoder.', '',1): v for k, v in state_dict.items() if k.startswith('actor_props_encoder.')}
+            self.actor_props_encoder.load_state_dict(actor_props_enc_state_dict, strict=strict)
+            print("=== EncActorCritic : Load Actor Props Encoder Weights ===")
+            critic_props_enc_state_dict = {k.replace('critic_props_encoder.', '',1): v for k, v in state_dict.items() if k.startswith('critic_props_encoder.')}
+            self.critic_props_encoder.load_state_dict(critic_props_enc_state_dict, strict=strict)
+            print("=== EncActorCritic : Load Critic Props Encoder Weights ===")
         # 这里还需要load normalization的参数
         if (self.load_mask & self.LOAD_NORMALIZER_WEIGHTS):
             # if (self.actor_obs_normalization) and ('actor_obs_normalizer' in state_dict):

@@ -13,9 +13,9 @@ import warnings
 from collections import deque
 
 import rsl_rl
-from rsl_rl.algorithms import PPO
+from rsl_rl.algorithms import PPO,PPO_AME2
 from rsl_rl.env import VecEnv
-from rsl_rl.modules import ActorCritic, EncActorCritic,ActorCriticRecurrent, resolve_rnd_config, resolve_symmetry_config
+from rsl_rl.modules import ActorCritic, EncActorCritic,ActorCriticRecurrent, Enc2ActorCritic,resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 
 
@@ -102,14 +102,20 @@ class OnPolicyRunner:
                 for _ in range(self.num_steps_per_env):
                     amp_obs = self._get_amp_obs(obs)
                     # Sample actions
-                    actions = self.alg.act(obs, amp_obs=amp_obs)
+                    if getattr(self.alg, "amp_enabled", False) and self.alg_cfg.get("amp_enabled", False):
+                        actions = self.alg.act(obs, amp_obs=amp_obs)
+                    else:
+                        actions = self.alg.act(obs)
                     # Step the environment
                     obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
                     # Move to device
                     obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
                     # process the step
                     next_amp_obs = self._get_amp_obs(obs, extras)
-                    self.alg.process_env_step(obs, rewards, dones, extras, amp_obs=next_amp_obs)
+                    if getattr(self.alg, "amp_enabled", False) and self.alg_cfg.get("amp_enabled", False):
+                        self.alg.process_env_step(obs, rewards, dones, extras, amp_obs=next_amp_obs)
+                    else:
+                        self.alg.process_env_step(obs, rewards, dones, extras)
                     # Extract intrinsic rewards (only for logging)
                     intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
                     # book keeping
@@ -240,25 +246,13 @@ class OnPolicyRunner:
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
 
-    def _get_amp_obs(self, obs, extras=None):
-        """Extract AMP policy observations if present."""
-        amp_obs = None
-        if obs is not None and hasattr(obs, "get"):
-            amp_obs = obs.get("amp_policy", None)
-        if amp_obs is None and extras is not None:
-            obs_extras = extras.get("observations", None) if hasattr(extras, "get") else None
-            if obs_extras is not None and hasattr(obs_extras, "get"):
-                amp_obs = obs_extras.get("amp_policy", None)
-        return amp_obs
-
-        str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
+        log_title = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
             log_string = (
                 f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                    'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+                f"""{log_title.center(width, ' ')}\n\n"""
+                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs['collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
             )
             # -- Losses
@@ -276,9 +270,8 @@ class OnPolicyRunner:
         else:
             log_string = (
                 f"""{'#' * width}\n"""
-                f"""{str.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                    'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+                f"""{log_title.center(width, ' ')}\n\n"""
+                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs['collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                 f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
             )
             for key, value in locs["loss_dict"].items():
@@ -289,16 +282,21 @@ class OnPolicyRunner:
             f"""{'-' * width}\n"""
             f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
             f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
-            f"""{'Time elapsed:':>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
-            f"""{'ETA:':>{pad}} {time.strftime(
-                "%H:%M:%S",
-                time.gmtime(
-                    self.tot_time / (locs['it'] - locs['start_iter'] + 1)
-                    * (locs['start_iter'] + locs['num_learning_iterations'] - locs['it'])
-                )
-            )}\n"""
+            f"""{'Time elapsed:':>{pad}} {time.strftime('%H:%M:%S', time.gmtime(self.tot_time))}\n"""
+            f"""{'ETA:':>{pad}} {time.strftime('%H:%M:%S', time.gmtime(self.tot_time / (locs['it'] - locs['start_iter'] + 1) * (locs['start_iter'] + locs['num_learning_iterations'] - locs['it'])))}\n"""
         )
         print(log_string)
+
+    def _get_amp_obs(self, obs, extras=None):
+        """Extract AMP policy observations if present."""
+        amp_obs = None
+        if obs is not None and hasattr(obs, "get"):
+            amp_obs = obs.get("amp_policy", None)
+        if amp_obs is None and extras is not None:
+            obs_extras = extras.get("observations", None) if hasattr(extras, "get") else None
+            if obs_extras is not None and hasattr(obs_extras, "get"):
+                amp_obs = obs_extras.get("amp_policy", None)
+        return amp_obs
 
     def save(self, path: str, infos=None):
         # -- Save model
@@ -408,7 +406,7 @@ class OnPolicyRunner:
         # set device to the local rank
         torch.cuda.set_device(self.gpu_local_rank)
 
-    def _construct_algorithm(self, obs) -> PPO:
+    def _construct_algorithm(self, obs) -> PPO_AME2:
         """Construct the actor-critic algorithm."""
         # resolve RND config
         self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
@@ -430,13 +428,32 @@ class OnPolicyRunner:
 
         # initialize the actor-critic
         actor_critic_class = eval(self.policy_cfg.pop("class_name"))
-        actor_critic: ActorCritic | ActorCriticRecurrent | EncActorCritic = actor_critic_class(
+        actor_critic: ActorCritic | ActorCriticRecurrent | EncActorCritic | Enc2ActorCritic= actor_critic_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
         # initialize the algorithm
         alg_class = eval(self.alg_cfg.pop("class_name"))
-        alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
+        multi_gpu_cfg = self.alg_cfg.pop("multi_gpu_cfg", None)
+        if multi_gpu_cfg is None:
+            multi_gpu_cfg = self.multi_gpu_cfg
+
+        # Filter unsupported kwargs based on __init__ signature
+        import inspect
+
+        alg_kwargs = dict(self.alg_cfg)
+        sig = inspect.signature(alg_class.__init__)
+        valid_keys = {k for k in sig.parameters.keys() if k not in {"self"}}
+        if "multi_gpu_cfg" not in valid_keys:
+            valid_keys.add("multi_gpu_cfg")
+        alg_kwargs = {k: v for k, v in alg_kwargs.items() if k in valid_keys}
+
+        alg: PPO_AME2 = alg_class(
+            actor_critic,
+            device=self.device,
+            **alg_kwargs,
+            multi_gpu_cfg=multi_gpu_cfg,
+        )
 
         # initialize the storage
         alg.init_storage(

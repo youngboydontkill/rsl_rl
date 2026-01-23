@@ -132,3 +132,8 @@ If you use the library with symmetry augmentation, please cite:
 Enc2ActorCritic 现在有两个独立的 AME2Encoder：actor_AME2Encoder 和 critic_AME2Encoder。  
 Actor/critic 编码流程分别使用各自的 encoder。   
 PPO 蒸馏使用 critic encoder 的 embedding 作为 teacher，actor encoder 的 embedding 作为 student，并且只更新 actor encoder + actor props encoder。  
+
+
+## 1.23 最小验证试验——训练AME2Encoder + teacher policy
+1. 不添加hiking in the wild 的相关惩罚，纯使用AME-2的privilege方式跑一个teacher;  
+2. 不给critic输入额外的特权信息（还是AC不是AAC）    

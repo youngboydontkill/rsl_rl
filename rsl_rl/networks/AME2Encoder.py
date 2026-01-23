@@ -238,6 +238,7 @@ class AME2MapEncoder(nn.Module):
         query_mlp_hidden=(96,),
         use_batch_norm: bool = True,
         pos_from_map: bool = True,
+        remove_xy_channels: bool = True,
     ):
         super().__init__()
         self.encoder = AME2Encoder(
@@ -253,6 +254,7 @@ class AME2MapEncoder(nn.Module):
             query_mlp_hidden=query_mlp_hidden,
             use_batch_norm=use_batch_norm,
             pos_from_map=pos_from_map,
+            remove_xy_channels=remove_xy_channels,
         )
 
     def forward(self, map_obs, proprio_embed, embedding_only=False):
