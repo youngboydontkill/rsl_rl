@@ -270,8 +270,11 @@ class Enc2ActorCritic(nn.Module):
             embedding,attention = self.actor_AME2Encoder(high_dim_obs,props_embed,embedding_only=False)
         else:
             embedding,attention = self.AME2Encoder(high_dim_obs,props_embed,embedding_only=False)
+        if attention is not None and attention.dim() == 3:
+            attention = attention.unsqueeze(1)
         # compute mean
         action = self.actor(embedding)
+        self.output_attention=True
         if (self.output_attention):
             return action,attention
         else:
