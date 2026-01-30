@@ -270,8 +270,11 @@ class Enc2ActorCritic(nn.Module):
             embedding,attention = self.actor_AME2Encoder(high_dim_obs,props_embed,embedding_only=False)
         else:
             embedding,attention = self.AME2Encoder(high_dim_obs,props_embed,embedding_only=False)
+        if attention is not None and attention.dim() == 3:
+            attention = attention.unsqueeze(1)
         # compute mean
         action = self.actor(embedding)
+        self.output_attention=True
         if (self.output_attention):
             return action,attention
         else:
@@ -428,15 +431,43 @@ class Enc2ActorCritic(nn.Module):
             critic_state_dict = {k.replace('critic.', '',1): v for k, v in state_dict.items() if k.startswith('critic.')}
             self.critic.load_state_dict(critic_state_dict, strict=strict)
             print("=== EncActorCritic : Load Critic Weights ===")
-        if self.load_mask & self.LOAD_ENCODER_WEIGHTS & self.use2Encoder:
-            enc_state_dict = {k.replace('encoder.', '',1): v for k, v in state_dict.items() if k.startswith('encoder.')}
-            self.actor_AME2Encoder.load_state_dict(enc_state_dict, strict=strict)
-            self.critic_AME2Encoder.load_state_dict(enc_state_dict, strict=strict)
-            print("=== EncActorCritic : Load Encoder Weights (Actor/Critic) ===")
-        if self.load_mask & self.LOAD_ENCODER_WEIGHTS & (not self.use2Encoder):
-            enc_state_dict = {k.replace('encoder.', '',1): v for k, v in state_dict.items() if k.startswith('encoder.')}
-            self.AME2Encoder.load_state_dict(enc_state_dict, strict=strict)
-            print("=== EncActorCritic : Load Encoder Weights (Shared) ===")
+        if self.load_mask & self.LOAD_ENCODER_WEIGHTS:
+            if self.use2Encoder:
+                actor_enc_state = {k.replace("actor_AME2Encoder.", "", 1): v
+                                   for k, v in state_dict.items()
+                                   if k.startswith("actor_AME2Encoder.")}
+                critic_enc_state = {k.replace("critic_AME2Encoder.", "", 1): v
+                                    for k, v in state_dict.items()
+                                    if k.startswith("critic_AME2Encoder.")}
+                if len(actor_enc_state) == 0 and len(critic_enc_state) == 0:
+                    # 兼容旧前缀 encoder.*
+                    enc_state = {k.replace("encoder.", "", 1): v
+                                 for k, v in state_dict.items()
+                                 if k.startswith("encoder.")}
+                    if len(enc_state) == 0:
+                        print("=== EncActorCritic : No encoder weights found; skip loading ===")
+                    else:
+                        self.actor_AME2Encoder.load_state_dict(enc_state, strict=strict)
+                        self.critic_AME2Encoder.load_state_dict(enc_state, strict=strict)
+                        print("=== EncActorCritic : Load Encoder Weights (Actor/Critic, shared state) ===")
+                else:
+                    self.actor_AME2Encoder.load_state_dict(actor_enc_state, strict=strict)
+                    self.critic_AME2Encoder.load_state_dict(critic_enc_state, strict=strict)
+                    print("=== EncActorCritic : Load Encoder Weights (Actor/Critic) ===")
+            else:
+                enc_state = {k.replace("AME2Encoder.", "", 1): v
+                             for k, v in state_dict.items()
+                             if k.startswith("AME2Encoder.")}
+                if len(enc_state) == 0:
+                    # 兼容旧前缀 encoder.*
+                    enc_state = {k.replace("encoder.", "", 1): v
+                                 for k, v in state_dict.items()
+                                 if k.startswith("encoder.")}
+                if len(enc_state) == 0:
+                    print("=== EncActorCritic : No encoder weights found; skip loading ===")
+                else:
+                    self.AME2Encoder.load_state_dict(enc_state, strict=strict)
+                    print("=== EncActorCritic : Load Encoder Weights (Shared) ===")
         if self.load_mask & self.LOAD_PROPS_ENCODER_WEIGHTS:
             actor_props_enc_state_dict = {k.replace('actor_props_encoder.', '',1): v for k, v in state_dict.items() if k.startswith('actor_props_encoder.')}
             self.actor_props_encoder.load_state_dict(actor_props_enc_state_dict, strict=strict)
