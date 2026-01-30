@@ -137,3 +137,9 @@ PPO 蒸馏使用 critic encoder 的 embedding 作为 teacher，actor encoder 的
 ## 1.23 最小验证试验——训练AME2Encoder + teacher policy
 1. 不添加hiking in the wild 的相关惩罚，纯使用AME-2的privilege方式跑一个teacher;  
 2. 不给critic输入额外的特权信息（还是AC不是AAC）    
+
+## 1.25 Play  
+1. 遇到楼梯不走了  
+2. terrain level 只有3  
+从奖励入手resume：提高track_lin_vel; 降低：track_ang_vel_z_exp（防止跟踪速度直接掉下去）；stand_still;undesired_contacts;feet_stumble;  
+简单地形削减+增加楼梯、独木桥

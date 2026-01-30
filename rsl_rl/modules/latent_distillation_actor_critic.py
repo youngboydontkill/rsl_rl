@@ -170,7 +170,7 @@ class LatentDistillationActorCritic(nn.Module):
         self.load_mask = load_mask  # 加载参数的mask
         self.output_attention = output_attention  # 是否输出attention 
         # 使用prop encoder之后，嵌入维度固定
-        map_embed_dim = global_dim + self.attn_embedding_dim
+        map_embed_dim = global_dim 
         embedding_actor_dim = self.props_embed_dim + map_embed_dim  # [B, map_embed + prop_embed]
         embedding_critic_dim = self.props_embed_dim + map_embed_dim  # [B, map_embed + prop_embed]
         self.embedding_actor_dim = embedding_actor_dim
@@ -250,11 +250,11 @@ class LatentDistillationActorCritic(nn.Module):
         perception_cf = self._prepare_perception(perception_obs)
         # compute embedding
         if self.use2Encoder:
-            embedding, _ = self.actor_encoder(
+            embedding = self.actor_encoder(
                 perception_cf, proprio_obs, embedding_only=False
             )
         else:
-            embedding, _ = self.encoder(
+            embedding = self.encoder(
                 perception_cf, proprio_obs, embedding_only=False
             )
         if self.verify:
@@ -285,30 +285,28 @@ class LatentDistillationActorCritic(nn.Module):
         perception_cf = self._prepare_perception(high_dim_obs)
         # compute embedding
         if self.use2Encoder:
-            embedding, attention = self.actor_encoder(
+            embedding= self.actor_encoder(
                 perception_cf, low_dim_obs, embedding_only=False
             )
         else:
-            embedding, attention = self.encoder(
+            embedding= self.encoder(
                 perception_cf, low_dim_obs, embedding_only=False
             )
         # compute mean
         action = self.actor(embedding)
-        if (self.output_attention):
-            return action,attention
-        else:
-            return action
+        
+        return action
 
     def evaluate(self, obs, **kwargs):
         low_dim_obs,high_dim_obs = self.get_critic_obs(obs)  # [B,H,d]
         low_dim_obs = self.critic_obs_normalizer(low_dim_obs)
         perception_cf = self._prepare_perception(high_dim_obs)
         if self.use2Encoder:
-            embedding, _ = self.critic_encoder(
+            embedding = self.critic_encoder(
                 perception_cf, low_dim_obs, embedding_only=False
             )
         else:
-            embedding, _ = self.encoder(
+            embedding = self.encoder(
                 perception_cf, low_dim_obs, embedding_only=False
             )
         values = self.critic(embedding)
@@ -347,17 +345,37 @@ class LatentDistillationActorCritic(nn.Module):
         critic_perc = self._prepare_perception(critic_high)
 
         if self.use2Encoder:
-            student_latent, _, student_prop, student_perc = self.actor_encoder(
+            (
+                student_latent,
+                student_prop,
+                student_perc,
+                _,
+            ) = self.actor_encoder(
                 actor_perc, actor_low, embedding_only=True, return_intermediate=True
             )
-            teacher_latent, _, teacher_prop, teacher_perc = self.critic_encoder(
+            (
+                teacher_latent,
+                teacher_prop,
+                teacher_perc,
+                _,
+            ) = self.critic_encoder(
                 critic_perc, critic_low, embedding_only=True, return_intermediate=True
             )
         else:
-            student_latent, _, student_prop, student_perc = self.encoder(
+            (
+                student_latent,
+                student_prop,
+                student_perc,
+                _,
+            ) = self.encoder(
                 actor_perc, actor_low, embedding_only=True, return_intermediate=True
             )
-            teacher_latent, _, teacher_prop, teacher_perc = self.encoder(
+            (
+                teacher_latent,
+                teacher_prop,
+                teacher_perc,
+                _,
+            ) = self.encoder(
                 critic_perc, critic_low, embedding_only=True, return_intermediate=True
             )
 

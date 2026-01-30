@@ -188,6 +188,7 @@ class PerceptionEncoder(nn.Module):
 class Props_perc_fuser(nn.Module):
     """
     将本体感知与外感特征融合（使用 MLP）
+    global_dim: 输出的latent
     """
 
     def __init__(
@@ -204,15 +205,15 @@ class Props_perc_fuser(nn.Module):
         self.fusion_mlp = build_mlp(
             local_dim + global_dim + proprio_embed_dim,
             list(fusion_mlp_hidden),
-            global_dim + attn_dim,
+            global_dim,
         )
 
     def forward(self, local_feat, global_feat, proprio_embed):
         """
-        :param local_feat: (B, N, attn_dim) 
+        :param local_feat: (B, N, cnn_dim) 
         :param global_feat: (B, global_dim)
         :param proprio_embed: (B, proprio_embed_dim)
-        :return: fused_embedding (B, global_dim + attn_dim), attn_weights (None)
+        :return: fused_embedding (B, embed_dim), attn_weights (None)
         """
         fused = self.fusion_mlp(
             torch.cat([local_feat.mean(dim=1), global_feat, proprio_embed], dim=-1)
@@ -291,11 +292,11 @@ class LatentEncoder(nn.Module):
         """
         proprio_embed = self.props_encoder(proprioception)
         local_feat, global_feat = self.perc_encoder(perception)
-        latent, attn = self.fuser(local_feat, global_feat, proprio_embed)
+        latent, _ = self.fuser(local_feat, global_feat, proprio_embed)
         if embedding_only:
-            out = (latent, attn)
+            out = latent
         else:
-            out = (torch.cat([latent, proprio_embed], dim=-1), attn)
+            out = torch.cat([latent, proprio_embed], dim=-1)
         if return_intermediate:
-            return (*out, proprio_embed, global_feat, local_feat)
+            return (out, proprio_embed, global_feat, local_feat)
         return out

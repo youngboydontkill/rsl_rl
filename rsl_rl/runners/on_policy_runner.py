@@ -13,9 +13,9 @@ import warnings
 from collections import deque
 
 import rsl_rl
-from rsl_rl.algorithms import PPO,PPO_AME2
+from rsl_rl.algorithms import PPO,PPO_AME2,PPO_LD
 from rsl_rl.env import VecEnv
-from rsl_rl.modules import ActorCritic, EncActorCritic,ActorCriticRecurrent, Enc2ActorCritic,resolve_rnd_config, resolve_symmetry_config
+from rsl_rl.modules import ActorCritic, EncActorCritic,ActorCriticRecurrent, Enc2ActorCritic,LatentDistillationActorCritic,resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.utils import resolve_obs_groups, store_code_state
 
 
@@ -406,7 +406,7 @@ class OnPolicyRunner:
         # set device to the local rank
         torch.cuda.set_device(self.gpu_local_rank)
 
-    def _construct_algorithm(self, obs) -> PPO_AME2:
+    def _construct_algorithm(self, obs) -> PPO_LD:
         """Construct the actor-critic algorithm."""
         # resolve RND config
         self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
@@ -428,7 +428,7 @@ class OnPolicyRunner:
 
         # initialize the actor-critic
         actor_critic_class = eval(self.policy_cfg.pop("class_name"))
-        actor_critic: ActorCritic | ActorCriticRecurrent | EncActorCritic | Enc2ActorCritic= actor_critic_class(
+        actor_critic: ActorCritic | ActorCriticRecurrent | EncActorCritic | Enc2ActorCritic | LatentDistillationActorCritic = actor_critic_class(
             obs, self.cfg["obs_groups"], self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
@@ -448,7 +448,7 @@ class OnPolicyRunner:
             valid_keys.add("multi_gpu_cfg")
         alg_kwargs = {k: v for k, v in alg_kwargs.items() if k in valid_keys}
 
-        alg: PPO_AME2 = alg_class(
+        alg: PPO_LD = alg_class(
             actor_critic,
             device=self.device,
             **alg_kwargs,
