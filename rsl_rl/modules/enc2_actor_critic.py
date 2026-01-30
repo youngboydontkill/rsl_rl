@@ -274,11 +274,9 @@ class Enc2ActorCritic(nn.Module):
             attention = attention.unsqueeze(1)
         # compute mean
         action = self.actor(embedding)
-        self.output_attention=True
-        if (self.output_attention):
-            return action,attention
-        else:
-            return action
+        if self.output_attention:
+            return action, attention
+        return action
 
     def evaluate(self, obs, **kwargs):
         low_dim_obs,high_dim_obs = self.get_critic_obs(obs)  # [B,H,d]
