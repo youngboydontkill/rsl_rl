@@ -10,3 +10,4 @@ from .mlp import MLP
 from .normalization import EmpiricalDiscountedVariationNormalization, EmpiricalNormalization
 from .encoding import AttentionEncoderBlock, AttentionMapEncoder
 from .AME2Encoder import AME2MapEncoder,PropsEncoder
+from .latentEncoder import LatentEncoder

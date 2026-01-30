@@ -14,6 +14,7 @@ from .symmetry import *
 from .enc_actor_critic import EncActorCritic
 from .enc2_actor_critic import Enc2ActorCritic
 from .discriminator import Discriminator
+from .latent_distillation_actor_critic import LatentDistillationActorCritic
 
 __all__ = [
     "ActorCritic",
@@ -23,4 +24,5 @@ __all__ = [
     "EncActorCritic",
     "Enc2ActorCritic",
     "Discriminator",
+    "LatentDistillationActorCritic",
 ]
