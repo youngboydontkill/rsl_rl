@@ -137,3 +137,7 @@ PPO 蒸馏使用 critic encoder 的 embedding 作为 teacher，actor encoder 的
 ## 1.23 最小验证试验——训练AME2Encoder + teacher policy
 1. 不添加hiking in the wild 的相关惩罚，纯使用AME-2的privilege方式跑一个teacher;  
 2. 不给critic输入额外的特权信息（还是AC不是AAC）    
+
+## 1.27 LD代码更新
+LatentDistillationActorCritic 新增 freeze_teacher()、get_student_distill_params()、get_distill_embeddings()，提供 props_embed 与 perception_embed（全局感知特征）输出，用于蒸馏。
+ppo_ld.py 接入新蒸馏流程：学生与教师分别取 props_embed/perception_embed 做 MSE，保持原 Enc2ActorCritic 逻辑不变。
