@@ -143,3 +143,11 @@ PPO 蒸馏使用 critic encoder 的 embedding 作为 teacher，actor encoder 的
 2. terrain level 只有3  
 从奖励入手resume：提高track_lin_vel; 降低：track_ang_vel_z_exp（防止跟踪速度直接掉下去）；stand_still;undesired_contacts;feet_stumble;  
 简单地形削减+增加楼梯、独木桥
+
+
+## 1.30 LD method Train
+1. teacher训练：单帧的特权观测作为actor/critic的输入
+
+## 3.3 效果  
+1. AME2 teacher阶段效果好，LD会抬手但仍能注意（遇到gap会自行纠正不往里走）  
+2. 分离了isaaclab中的参数设置，修复了play中的bug  

@@ -468,7 +468,17 @@ class LatentDistillationActorCritic(nn.Module):
             # else:
             #     B = obs[obs_group].shape[0]
             #     obs_list.append(obs[obs_group].reshape(B,self.horizon,-1))  # [B,H,d_i]
-            obs_list.append(obs[obs_group]) # [B,H,d_i]
+            obs_tensor = obs[obs_group]
+            if obs_tensor.dim() > 2 and obs_tensor.shape[1] != self.actor_horizon:
+                if obs_tensor.shape[1] == 1:
+                    obs_tensor = obs_tensor.repeat(1, self.actor_horizon, *([1] * (obs_tensor.dim() - 2)))
+                elif obs_tensor.shape[1] < self.actor_horizon:
+                    pad_len = self.actor_horizon - obs_tensor.shape[1]
+                    pad = obs_tensor[:, -1:, ...].repeat(1, pad_len, *([1] * (obs_tensor.dim() - 2)))
+                    obs_tensor = torch.cat([obs_tensor, pad], dim=1)
+                else:
+                    obs_tensor = obs_tensor[:, -self.actor_horizon :, ...]
+            obs_list.append(obs_tensor) # [B,H,d_i]
         low_dim_obs = torch.cat(obs_list, dim=-1)  # [B,H,d]
         high_dim_obs_list = []
         for obs_group in self.obs_groups["perception"]:
@@ -487,8 +497,18 @@ class LatentDistillationActorCritic(nn.Module):
             #     B = obs[obs_group].shape[0]
             #     obs_list.append(obs[obs_group].reshape(B,self.horizon,-1))  # [B,H,d_i]
             obs_tensor = obs[obs_group]
-            if obs_tensor.dim() > 2 and self.critic_single_frame:
-                obs_tensor = obs_tensor[:, -1:, ...]
+            if obs_tensor.dim() > 2:
+                if self.critic_single_frame:
+                    obs_tensor = obs_tensor[:, -1:, ...]
+                elif obs_tensor.shape[1] != self.critic_horizon:
+                    if obs_tensor.shape[1] == 1:
+                        obs_tensor = obs_tensor.repeat(1, self.critic_horizon, *([1] * (obs_tensor.dim() - 2)))
+                    elif obs_tensor.shape[1] < self.critic_horizon:
+                        pad_len = self.critic_horizon - obs_tensor.shape[1]
+                        pad = obs_tensor[:, -1:, ...].repeat(1, pad_len, *([1] * (obs_tensor.dim() - 2)))
+                        obs_tensor = torch.cat([obs_tensor, pad], dim=1)
+                    else:
+                        obs_tensor = obs_tensor[:, -self.critic_horizon :, ...]
             obs_list.append(obs_tensor) # [B,H,d_i]
         low_dim_obs = torch.cat(obs_list, dim=-1)  # [B,H,d]
         high_dim_obs_list = []
@@ -544,12 +564,12 @@ class LatentDistillationActorCritic(nn.Module):
             critic_state_dict = {k.replace('critic.', '',1): v for k, v in state_dict.items() if k.startswith('critic.')}
             self.critic.load_state_dict(critic_state_dict, strict=strict)
             print("=== EncActorCritic : Load Critic Weights ===")
-        if self.load_mask & self.LOAD_ENCODER_WEIGHTS & self.use2Encoder:
+        if (self.load_mask & self.LOAD_ENCODER_WEIGHTS) and self.use2Encoder:
             enc_state_dict = {k.replace('encoder.', '',1): v for k, v in state_dict.items() if k.startswith('encoder.')}
             self.actor_encoder.load_state_dict(enc_state_dict, strict=strict)
             self.critic_encoder.load_state_dict(enc_state_dict, strict=strict)
             print("=== EncActorCritic : Load Encoder Weights (Actor/Critic) ===")
-        if self.load_mask & self.LOAD_ENCODER_WEIGHTS & (not self.use2Encoder):
+        if (self.load_mask & self.LOAD_ENCODER_WEIGHTS) and (not self.use2Encoder):
             enc_state_dict = {k.replace('encoder.', '',1): v for k, v in state_dict.items() if k.startswith('encoder.')}
             self.encoder.load_state_dict(enc_state_dict, strict=strict)
             print("=== EncActorCritic : Load Encoder Weights (Shared) ===")
